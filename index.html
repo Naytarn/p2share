@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>da best p2shara connection ever bb!!</title>
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <meta charset="utf-8">
+    
+</head>
+<body>
+    <!-- <div class="messagebox">
+        <label for="message">
+            text here
+            <input type="text" name="message" id="message" placeholder="..." size="60" />
+        </label>
+        <button id="sendMessButton" name="sendMessButton" class="buttonright" onclick="sendMess()">
+            okie dokie
+        </button>-->
+
+        <label id="link"></label>
+        <button id="link_button" onclick="copyLink()">
+            copy
+        </button>
+        <label for="file" id="files_label" style= "display: none;">
+            upload a file!
+            <input type="file" id="files" name="files" multiple style= "display: none;">
+        </label>
+        <button id="sendButton" name="sendButton" onclick="sendFile()" style= "display: none;" disabled>
+            send!
+        </button>
+        <a id="download"></a>
+
+
+      <!-- </div>  -->
+      <script>
+        linkLabel = document.getElementById("link")
+        sendButton = document.getElementById("sendButton")
+        fileInput = document.getElementById("files")
+        fileInput.addEventListener('change', fileChange, false);
+        lab = document.getElementById("files_label")
+        linkButton = document.getElementById("link_button")
+        downloadAnchor = document.getElementById("download")
+
+        var socket = io();
+        var ice_queue = [];
+        var had_connection = false;
+        var fileName = ""
+        var fileSize = 0    
+
+        //creating and giving out a link
+        socket.on("init_ok", async function(roomNum) {
+            if (roomNum) {
+                var link = "http://127.0.0.1:8000/" + roomNum['roomNum'];
+                linkLabel.innerHTML = link;
+            }
+            
+        });
+
+        async function sendChannelCallback(event) {        
+            console.log("Im ready for send")
+        }
+
+        function copyLink() {
+            var copyText = linkLabel.innerHTML;
+            navigator.clipboard.writeText(copyText);
+
+            alert("text copied ^-^");
+        }
+
+
+        function sendIce(e) {
+            var packet = {
+                candidate: null
+            }
+
+            if (e.candidate) {
+                packet.candidate = e.candidate.candidate
+                packet.sdpMid = e.candidate.sdpMid
+                packet.sdpMLineIndex = e.candidate.sdpMLineIndex
+                
+            }
+
+            socket.emit("ice", packet)
+            console.log("sent candidate", packet)
+        }
+
+
+        //both peers online, starting to connect them p2p
+        socket.on("partner_connected", async function() {
+            await sendOffer();
+            console.log("offer sent")
+        });
+        
+        socket.on("sdp_offer", async function(offer) {
+            await recieveOffer(offer);
+            console.log("offer received")
+        });
+
+        socket.on("sdp_answer", async function(answer) {
+            await recieveAnswer(answer);
+            console.log("answer received")
+        });
+
+        async function addIceCandidate(ice) {
+            if (ice.candidate) {
+                await rtcConnection.addIceCandidate(ice);
+            }
+            else {
+                await rtcConnection.addIceCandidate(null);
+            }
+            
+            console.log("ice added", ice)
+        }
+    
+        socket.on("ice", async function(ice) {
+
+            console.log("got ice")
+            if (had_connection)
+            {
+                addIceCandidate(ice)
+            }
+            else {
+                console.log("adding ice to queue")
+                ice_queue.push(ice)
+            }
+            
+        });
+
+        socket.on("file_info", async function(info) {
+            console.log("IM HERE BB");
+            fileName = info[0];
+            fileSize = info[1];
+        });
+
+        
+
+        //sdp thingy
+        async function sendOffer() {
+            var offer = await rtcConnection.createOffer()
+            await rtcConnection.setLocalDescription(offer);
+            socket.emit('sdp_offer', offer);
+        }
+
+        async function recieveOffer(offer) {
+            await rtcConnection.setRemoteDescription(offer);
+            socket.emit('offer_got')
+            var answer = await rtcConnection.createAnswer()
+            await rtcConnection.setLocalDescription(answer)
+            socket.emit('sdp_answer', answer)
+
+            had_connection = true
+
+            ice_queue.forEach((candidate) => addIceCandidate(candidate));
+            ice_queue = []
+        
+        }
+
+        async function recieveAnswer(answer) {
+            await  rtcConnection.setRemoteDescription(answer);
+            socket.emit('answer_got');
+
+            had_connection = true
+            
+            ice_queue.forEach((candidate) => addIceCandidate(candidate));
+            ice_queue = []
+
+            lab.style.display = "block"
+            sendButton.style.display = "block"
+            fileInput.style.display = "block"
+            linkLabel.style.display = "none"
+            linkButton.style.display = "none"
+        }
+
+        async function fileChange() {
+            if(fileInput.value){
+                sendButton.disabled = false;
+            }
+        }
+            
+        async function sendFile() {
+            var offset = 0;
+            fileReader = new FileReader();
+            console.log(fileInput.files)
+            file = fileInput.files[0]
+            size = file.size
+            console.log('File is', file);
+            if (file.size === 0) {
+                closeDataChannels();
+                return;
+            }
+            // sendChannel.send(file);
+            fileReader.addEventListener('load', e => {
+                console.log('FileRead.onload ', e);
+                sendChannel.send(e.target.result);
+                }
+            );
+
+            fileReader.readAsArrayBuffer(file.slice(0, size));
+            socket.emit("file_info", [file.name, file.size]);
+        }
+
+        //getting room number for the reciever(to connect him to the room from the link)
+        var roomNum = document.location.pathname.slice(1);
+        console.log(roomNum);
+
+        var role = 'receiver'
+
+        if (!roomNum) {
+            role = 'sender'
+        }
+
+        console.log(role)
+        
+
+        var rtcConnection = new RTCPeerConnection({ iceServers: [{ urls: ['stun:stun.l.google.com:19302'] }, {"urls": "turn:vc.medsenger.ru:3478?transport=tcp" ,"credential": "vcturn","username":"vcturn"}]});
+        
+        if(role == "receiver") {
+            rtcConnection.ondatachannel = receiveChannelCallback;
+        }
+        else {
+            rtcConnection.ondatachannel = sendChannelCallback;
+        }
+        
+        rtcConnection.onicecandidate = sendIce;
+        var sendChannel = rtcConnection.createDataChannel("sendChannel");
+        sendChannel.binaryType = 'arraybuffer';
+
+        var receiveBuffer = []
+        
+        
+        //telling the server that we've connected
+        if (roomNum) {
+            socket.emit('init', {roomNum: roomNum});     
+        }
+        else {
+            socket.emit('init', {});
+        }
+    
+        
+        function receiveChannelCallback(event) {
+            console.log('Receive Channel Callback');
+            receiveChannel = event.channel;
+            receiveChannel.binaryType = 'arraybuffer';
+            receiveChannel.onmessage = fileArrival;
+
+            downloadAnchor.textContent = '';
+            downloadAnchor.removeAttribute('download');
+            if (downloadAnchor.href) {
+                URL.revokeObjectURL(downloadAnchor.href);
+                downloadAnchor.removeAttribute('href');
+            }
+        }
+
+        function fileArrival(event) {
+            receiveBuffer.push(event.data);
+
+            const received = new Blob(receiveBuffer);
+            receiveBuffer = [];
+
+            downloadAnchor.href = URL.createObjectURL(received);
+            downloadAnchor.download = fileName;
+            downloadAnchor.textContent =
+            `Click to download '${fileName}', with size '${fileSize}'`;
+            downloadAnchor.style.display = 'block';
+
+            // closeDataChannels();
+        }
+
+    </script>
+</body>
+</html>
